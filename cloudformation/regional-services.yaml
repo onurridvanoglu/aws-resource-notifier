@@ -1,0 +1,695 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Resource Notifier - Regional Services - Monitors regional resource creation'
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: 'aws-resource-notifier'
+    Description: 'Prefix for naming resources'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues:
+      - 'dev'
+      - 'test'
+      - 'prod'
+      - 'aws-resource-notifier'
+    Description: 'Environment for tagging (dev, test, prod)'
+  
+  CreateCloudTrail:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Whether to create a new CloudTrail or use an existing one'
+  
+  TeamsWebhookUrl:
+    Type: String
+    Default: ''
+    Description: 'Microsoft Teams webhook URL (optional, can be configured later in AWS console)'
+    NoEcho: true
+
+Conditions:
+  ShouldCreateCloudTrail: !Equals [!Ref CreateCloudTrail, 'true']
+  HasWebhookUrl: !Not [!Equals [!Ref TeamsWebhookUrl, '']]
+
+Mappings:
+  StandardTags:
+    Tags:
+      CostCenter: "BT"
+      Responsible: "SRE Team"
+
+Resources:
+  # --------------------------------------------------
+  # CloudTrail Resources (Conditional)
+  # --------------------------------------------------
+  
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateCloudTrail
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}-cloudtrail-logs-${AWS::AccountId}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-cloudtrail-logs'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateCloudTrail
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !Sub 'arn:aws:s3:::${CloudTrailBucket}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${CloudTrailBucket}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+  
+  ResourceEventsTrail:
+    Type: AWS::CloudTrail::Trail
+    Condition: ShouldCreateCloudTrail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: !Sub '${ResourcePrefix}-trail'
+      S3BucketName: !Ref CloudTrailBucket
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-trail'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  # --------------------------------------------------
+  # Lambda Function
+  # --------------------------------------------------
+  
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-lambda-role-regional'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-lambda-role-regional'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}-lambda-policy-regional'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref TeamsWebhookSecret
+      Roles:
+        - !Ref LambdaRole
+  
+  ResourceNotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}-notifier-regional'
+      Description: 'Sends notifications to Microsoft Teams when regional AWS resources are created'
+      Runtime: python3.9
+      Handler: resource_creation_notifier.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_SECRET_NAME: !Ref TeamsWebhookSecret
+      Code:
+        ZipFile: |
+          # Placeholder code - replace with actual Lambda function code during deployment
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Placeholder function - please upload actual function code'
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-notifier-regional'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  # --------------------------------------------------
+  # Deletion Notifier Lambda Function
+  # --------------------------------------------------
+  
+  DeletionNotifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-deletion-notifier-role-regional'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-deletion-notifier-role-regional'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  DeletionNotifierPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}-deletion-notifier-policy-regional'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref TeamsWebhookSecret
+      Roles:
+        - !Ref DeletionNotifierRole
+  
+  DeletionNotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}-deletion-notifier-regional'
+      Description: 'Sends notifications to Microsoft Teams when regional AWS resources are deleted'
+      Runtime: python3.9
+      Handler: resource_deletion_notifier.lambda_handler
+      Role: !GetAtt DeletionNotifierRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_SECRET_NAME: !Ref TeamsWebhookSecret
+      Code:
+        ZipFile: |
+          # Placeholder code - replace with actual Lambda function code during deployment
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Placeholder function - please upload actual function code'
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-deletion-notifier-regional'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  # --------------------------------------------------
+  # EventBridge Rules for Regional Services
+  # --------------------------------------------------
+  
+  EC2InstanceCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ec2-instance-creation'
+      Description: 'Captures EC2 instance creation events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - RunInstances
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  S3BucketCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-s3-bucket-creation'
+      Description: 'Captures S3 bucket creation events'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - CreateBucket
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  RDSInstanceCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-rds-instance-creation'
+      Description: 'Captures RDS instance creation events'
+      EventPattern:
+        source:
+          - aws.rds
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - rds.amazonaws.com
+          eventName:
+            - CreateDBInstance
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  LambdaCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-lambda-creation'
+      Description: 'Captures Lambda function creation events'
+      EventPattern:
+        source:
+          - aws.lambda
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - lambda.amazonaws.com
+          eventName:
+            - CreateFunction20150331
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  SecurityGroupCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-security-group-creation'
+      Description: 'Captures security group creation events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - CreateSecurityGroup
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  VPCCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-vpc-creation'
+      Description: 'Captures VPC creation events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - CreateVpc
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  ELBCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-elb-creation'
+      Description: 'Captures Elastic Load Balancer creation events'
+      EventPattern:
+        source:
+          - aws.elasticloadbalancing
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - elasticloadbalancing.amazonaws.com
+          eventName:
+            - CreateLoadBalancer
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+
+  # --------------------------------------------------
+  # EventBridge Rules for Regional Service Deletions
+  # --------------------------------------------------
+  
+  EC2InstanceDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ec2-instance-deletion'
+      Description: 'Captures EC2 instance deletion events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - TerminateInstances
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  S3BucketDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-s3-bucket-deletion'
+      Description: 'Captures S3 bucket deletion events'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - DeleteBucket
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  RDSInstanceDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-rds-instance-deletion'
+      Description: 'Captures RDS instance deletion events'
+      EventPattern:
+        source:
+          - aws.rds
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - rds.amazonaws.com
+          eventName:
+            - DeleteDBInstance
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  LambdaFunctionDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-lambda-deletion'
+      Description: 'Captures Lambda function deletion events'
+      EventPattern:
+        source:
+          - aws.lambda
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - lambda.amazonaws.com
+          eventName:
+            - DeleteFunction20150331
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  SecurityGroupDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-security-group-deletion'
+      Description: 'Captures security group deletion events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - DeleteSecurityGroup
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  VPCDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-vpc-deletion'
+      Description: 'Captures VPC deletion events'
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - DeleteVpc
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  ELBDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-elb-deletion'
+      Description: 'Captures Elastic Load Balancer deletion events'
+      EventPattern:
+        source:
+          - aws.elasticloadbalancing
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - elasticloadbalancing.amazonaws.com
+          eventName:
+            - DeleteLoadBalancer
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+
+  # Lambda Permissions for EventBridge Rules
+  EC2RulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EC2InstanceCreationRule.Arn
+  
+  S3RulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3BucketCreationRule.Arn
+  
+  RDSRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RDSInstanceCreationRule.Arn
+  
+  LambdaRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt LambdaCreationRule.Arn
+  
+  SGRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SecurityGroupCreationRule.Arn
+  
+  VPCRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt VPCCreationRule.Arn
+  
+  ELBRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ELBCreationRule.Arn
+
+  # Lambda Permissions for Deletion EventBridge Rules
+  EC2DeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EC2InstanceDeletionRule.Arn
+  
+  S3DeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3BucketDeletionRule.Arn
+  
+  RDSDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RDSInstanceDeletionRule.Arn
+  
+  LambdaDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt LambdaFunctionDeletionRule.Arn
+  
+  SGDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SecurityGroupDeletionRule.Arn
+  
+  VPCDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt VPCDeletionRule.Arn
+  
+  ELBDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ELBDeletionRule.Arn
+
+  # --------------------------------------------------
+  # Secrets Manager
+  # --------------------------------------------------
+  
+  TeamsWebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ResourcePrefix}-teams-webhook-regional'
+      Description: 'Microsoft Teams webhook URL for AWS Resource Notifier (Regional Services)'
+      SecretString: !If [HasWebhookUrl, !Sub '{"webhookUrl":"${TeamsWebhookUrl}"}', !Ref 'AWS::NoValue']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-teams-webhook-regional'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt ResourceNotifierFunction.Arn
+  
+  TeamsWebhookSecretArn:
+    Description: 'ARN of the Teams webhook secret'
+    Value: !Ref TeamsWebhookSecret
+  
+  CloudTrailArn:
+    Description: 'ARN of the CloudTrail'
+    Value: !If [ShouldCreateCloudTrail, !GetAtt ResourceEventsTrail.Arn, 'Not created, using existing CloudTrail'] 

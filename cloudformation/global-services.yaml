@@ -1,0 +1,339 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Resource Notifier - Global Services (IAM, Route53) - Deployed in us-east-1'
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: 'aws-resource-notifier'
+    Description: 'Prefix for naming resources'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues:
+      - 'dev'
+      - 'test'
+      - 'prod'
+      - 'aws-resource-notifier'
+    Description: 'Environment for tagging (dev, test, prod)'
+  
+  TeamsWebhookUrl:
+    Type: String
+    Default: ''
+    Description: 'Microsoft Teams webhook URL (optional, can be configured later in AWS console)'
+    NoEcho: true
+
+Conditions:
+  HasWebhookUrl: !Not [!Equals [!Ref TeamsWebhookUrl, '']]
+
+Mappings:
+  StandardTags:
+    Tags:
+      CostCenter: "BT"
+      Responsible: "SRE Team"
+
+Resources:
+  # --------------------------------------------------
+  # Lambda Function
+  # --------------------------------------------------
+  
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-lambda-role-global'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-lambda-role-global'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}-lambda-policy-global'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref TeamsWebhookSecret
+      Roles:
+        - !Ref LambdaRole
+  
+  ResourceNotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}-notifier-global'
+      Description: 'Sends notifications to Microsoft Teams when global AWS resources are created'
+      Runtime: python3.9
+      Handler: resource_creation_notifier.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_SECRET_NAME: !Ref TeamsWebhookSecret
+      Code:
+        ZipFile: |
+          # Placeholder code - replace with actual Lambda function code during deployment
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Placeholder function - please upload actual function code'
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-notifier-global'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+
+  # --------------------------------------------------
+  # Deletion Notifier Lambda Function
+  # --------------------------------------------------
+  
+  DeletionNotifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-deletion-notifier-role-global'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-deletion-notifier-role-global'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+  
+  DeletionNotifierPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}-deletion-notifier-policy-global'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref TeamsWebhookSecret
+      Roles:
+        - !Ref DeletionNotifierRole
+  
+  DeletionNotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}-deletion-notifier-global'
+      Description: 'Sends notifications to Microsoft Teams when global AWS resources are deleted'
+      Runtime: python3.9
+      Handler: resource_deletion_notifier.lambda_handler
+      Role: !GetAtt DeletionNotifierRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_SECRET_NAME: !Ref TeamsWebhookSecret
+      Code:
+        ZipFile: |
+          # Placeholder code - replace with actual Lambda function code during deployment
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Placeholder function - please upload actual function code'
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-deletion-notifier-global'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+
+  # --------------------------------------------------
+  # EventBridge Rules for Global Services
+  # --------------------------------------------------
+  
+  IAMUserCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-iam-user-creation'
+      Description: 'Captures IAM user creation events'
+      EventPattern:
+        source:
+          - aws.iam
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - iam.amazonaws.com
+          eventName:
+            - CreateUser
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+  
+  Route53RecordCreationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-route53-record-creation'
+      Description: 'Captures Route53 DNS record creation events'
+      EventPattern:
+        source:
+          - aws.route53
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - route53.amazonaws.com
+          eventName:
+            - ChangeResourceRecordSets
+          requestParameters:
+            changeBatch:
+              changes:
+                action:
+                  - CREATE
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt ResourceNotifierFunction.Arn
+
+  # --------------------------------------------------
+  # EventBridge Rules for Global Service Deletions
+  # --------------------------------------------------
+  
+  IAMUserDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-iam-user-deletion'
+      Description: 'Captures IAM user deletion events'
+      EventPattern:
+        source:
+          - aws.iam
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - iam.amazonaws.com
+          eventName:
+            - DeleteUser
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+  
+  Route53RecordDeletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-route53-record-deletion'
+      Description: 'Captures Route53 DNS record deletion events'
+      EventPattern:
+        source:
+          - aws.route53
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - route53.amazonaws.com
+          eventName:
+            - ChangeResourceRecordSets
+          requestParameters:
+            changeBatch:
+              changes:
+                action:
+                  - DELETE
+      State: ENABLED
+      Targets:
+        - Id: LambdaFunction
+          Arn: !GetAtt DeletionNotifierFunction.Arn
+
+  # Lambda Permissions for EventBridge Rules
+  IAMUserRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt IAMUserCreationRule.Arn
+  
+  Route53RulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResourceNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Route53RecordCreationRule.Arn
+
+  # Lambda Permissions for Deletion EventBridge Rules
+  IAMUserDeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt IAMUserDeletionRule.Arn
+  
+  Route53DeletionRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeletionNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Route53RecordDeletionRule.Arn
+
+  # --------------------------------------------------
+  # Secrets Manager
+  # --------------------------------------------------
+  
+  TeamsWebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ResourcePrefix}-teams-webhook-global'
+      Description: 'Microsoft Teams webhook URL for AWS Resource Notifier (Global Services)'
+      SecretString: !If [HasWebhookUrl, !Sub '{"webhookUrl":"${TeamsWebhookUrl}"}', !Ref 'AWS::NoValue']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-teams-webhook-global'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !FindInMap [StandardTags, Tags, CostCenter]
+        - Key: Responsible
+          Value: !FindInMap [StandardTags, Tags, Responsible]
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt ResourceNotifierFunction.Arn
+  
+  TeamsWebhookSecretArn:
+    Description: 'ARN of the Teams webhook secret'
+    Value: !Ref TeamsWebhookSecret 
